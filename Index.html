@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Zoom Interpreter Panel</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: Arial, sans-serif;
+      background: #f7f8fa;
+      min-height: 100vh;
+      display: flex;
+      justify-content: center;
+      align-items: flex-start;
+      padding: 4px;
+    }
+    #interpreterPanel {
+      background: #fff;
+      border-radius: 8px;
+      width: 100%;
+      max-width: 200px;
+    }
+    .btn-group { display: flex; flex-direction: column; gap: 6px; padding: 6px; }
+    button {
+      padding: 7px 10px;
+      border: none;
+      border-radius: 6px;
+      color: #fff;
+      font-size: 0.75rem;
+      cursor: pointer;
+      font-weight: 600;
+      transition: background 0.2s;
+    }
+    button:disabled { background: #aaa; cursor: not-allowed; }
+    .btn-invite { background: #e67e22; }
+    .btn-invite:hover:not(:disabled) { background: #ca6f1e; }
+    .btn-msg { background: #0e71eb; }
+    .btn-msg:hover:not(:disabled) { background: #085bb5; }
+    .divider { border: none; border-top: 1px solid #eee; margin: 2px 0; }
+    .status { padding: 4px 6px; font-size: 0.7rem; color: #888; }
+    .notice { padding: 0 6px 4px; color: #218838; font-weight: 500; min-height: 16px; font-size: 0.7rem; }
+    .error { color: #b72c2c; }
+
+    #alertOverlay {
+      display: none;
+      background: #f1c40f;
+      border-radius: 6px;
+      padding: 10px 8px;
+      flex-direction: column;
+      align-items: center;
+      gap: 4px;
+      margin: 4px 6px;
+      text-align: center;
+    }
+    #alertOverlay.show { display: flex; }
+    #alertIcon { font-size: 1.2rem; }
+    #alertText {
+      font-size: 0.75rem;
+      font-weight: 700;
+      color: #333;
+      line-height: 1.3;
+    }
+    #alertTimer { font-size: 0.65rem; color: #666; }
+  </style>
+</head>
+<body>
+  <div id="interpreterPanel">
+    <div id="status" class="status">Initializing...</div>
+
+    <div id="alertOverlay">
+      <div id="alertIcon">⚠️</div>
+      <div id="alertText"></div>
+      <div id="alertTimer"></div>
+    </div>
+
+    <div class="btn-group">
+      <button id="btnInvite" class="btn-invite" onclick="inviteAll()" disabled>
+        📨 초대 보내기
+      </button>
+      <hr class="divider">
+      <button id="btn1" class="btn-msg" onclick="sendMsg('Please speak closer to the mic')" disabled>
+        Speak closer to mic
+      </button>
+      <button id="btn2" class="btn-msg" onclick="sendMsg('Please speak slower')" disabled>
+        Speak slower
+      </button>
+      <button id="btn3" class="btn-msg" onclick="sendMsg('Audio is unclear')" disabled>
+        Audio is unclear
+      </button>
+    </div>
+
+    <div id="notice" class="notice"></div>
+  </div>
+
+  <script src="https://appssdk.zoom.us/sdk.min.js"></script>
+  <script>
+    let sdkReady = false;
+    let alertTimeout = null;
+
+    function setStatus(msg) {
+      document.getElementById('status').textContent = msg;
+    }
+
+    function setNotice(msg, isError = false) {
+      const el = document.getElementById('notice');
+      el.textContent = msg;
+      el.className = isError ? 'notice error' : 'notice';
+    }
+
+    function enableButtons() {
+      ['btnInvite','btn1','btn2','btn3'].forEach(id => {
+        document.getElementById(id).disabled = false;
+      });
+    }
+
+    function showAlert(message) {
+      const overlay = document.getElementById('alertOverlay');
+      document.getElementById('alertText').textContent = message;
+      overlay.classList.add('show');
+      let remaining = 5;
+      document.getElementById('alertTimer').textContent = remaining + '초';
+      if (alertTimeout) clearInterval(alertTimeout);
+      alertTimeout = setInterval(() => {
+        remaining--;
+        if (remaining <= 0) {
+          clearInterval(alertTimeout);
+          overlay.classList.remove('show');
+        } else {
+          document.getElementById('alertTimer').textContent = remaining + '초';
+        }
+      }, 1000);
+    }
+
+    async function initZoom() {
+      try {
+        await zoomSdk.config({
+          version: '0.16',
+          popoutSize: { width: 200, height: 280 },
+          capabilities: [
+            'sendMessage', 'onMessage', 'getMeetingContext',
+            'getUserContext', 'getRunningContext',
+            'sendAppInvitation', 'getMeetingParticipants'
+          ]
+        });
+        sdkReady = true;
+        setStatus('✅ Ready');
+        enableButtons();
+
+        zoomSdk.expandApp({ action: 'collapse' }).catch(() => {});
+
+        zoomSdk.onMessage((data) => {
+          try {
+            const msg = data.payload.message;
+            showAlert(msg);
+          } catch(e) {
+            console.error('onMessage error:', e);
+          }
+        });
+
+      } catch (e) {
+        setStatus('⚠️ ' + e.message);
+        enableButtons();
+      }
+    }
+
+    async function inviteAll() {
+      if (!sdkReady) { setNotice('SDK not ready', true); return; }
+      try {
+        const participants = await zoomSdk.getMeetingParticipants();
+        const uuids = participants.participants.map(p => p.participantUUID);
+        await zoomSdk.sendAppInvitation({ participantUUIDs: uuids });
+        setNotice('✔️ 초대 완료!');
+        setTimeout(() => setNotice(''), 3000);
+      } catch (err) {
+        setNotice('Failed: ' + err.message, true);
+      }
+    }
+
+    async function sendMsg(message) {
+      if (!sdkReady) { setNotice('SDK not ready', true); return; }
+      showAlert(message);
+      try {
+        await zoomSdk.sendMessage({ payload: { message } });
+      } catch (err) {
+        console.error('sendMessage error:', err);
+      }
+    }
+
+    initZoom();
+  </script>
+</body>
+</html>
