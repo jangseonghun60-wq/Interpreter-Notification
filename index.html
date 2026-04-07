@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Zoom Interpreter Panel</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: Arial, sans-serif;
+      background: #f7f8fa;
+      min-height: 100vh;
+      display: flex;
+      justify-content: center;
+      align-items: flex-start;
+      padding: 8px;
+    }
+    #interpreterPanel {
+      background: #fff;
+      border-radius: 12px;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.07);
+      width: 100%;
+      max-width: 340px;
+      overflow: hidden;
+    }
+    .btn-group { display: flex; flex-direction: column; gap: 10px; padding: 12px; }
+    button {
+      padding: 11px 16px;
+      border: none;
+      border-radius: 8px;
+      color: #fff;
+      font-size: 0.95rem;
+      cursor: pointer;
+      font-weight: 600;
+      transition: background 0.2s;
+    }
+    button:disabled { background: #aaa; cursor: not-allowed; }
+    .btn-invite { background: #e67e22; }
+    .btn-invite:hover:not(:disabled) { background: #ca6f1e; }
+    .btn-msg { background: #0e71eb; }
+    .btn-msg:hover:not(:disabled) { background: #085bb5; }
+    .divider { border: none; border-top: 1px solid #eee; margin: 4px 0; }
+    .notice { padding: 0 12px 8px; color: #218838; font-weight: 500; min-height: 20px; font-size: 0.85rem; }
+    .error { color: #b72c2c; }
+    .status { padding: 8px 12px 0; font-size: 0.8rem; color: #888; }
+    .section-label { font-size: 0.75rem; color: #aaa; margin-bottom: 4px; }
+
+    #alertOverlay {
+      display: none;
+      background: #f1c40f;
+      border-radius: 10px;
+      padding: 40px 16px;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      margin: 8px 12px;
+      text-align: center;
+      min-height: 50vh;
+    }
+    #alertOverlay.show { display: flex; }
+    #alertIcon { font-size: 3rem; }
+    #alertText {
+      font-size: 1.4rem;
+      font-weight: 700;
+      color: #333;
+      line-height: 1.4;
+    }
+    #alertTimer { font-size: 0.9rem; color: #666; }
+  </style>
+</head>
+<body>
+  <div id="interpreterPanel">
+    <div id="status" class="status">Initializing...</div>
+
+    <div id="alertOverlay">
+      <div id="alertIcon">⚠️</div>
+      <div id="alertText"></div>
+      <div id="alertTimer"></div>
+    </div>
+
+    <div class="btn-group">
+      <div class="section-label">① 회의 시작 시 먼저 클릭</div>
+      <button id="btnInvite" class="btn-invite" onclick="inviteAll()" disabled>
+        📨 모든 참석자에게 앱 초대 보내기
+      </button>
+      <hr class="divider">
+      <div class="section-label">② 필요할 때 클릭</div>
+      <button id="btn1" class="btn-msg" onclick="sendMsg('Please speak closer to the mic')" disabled>
+        Please speak closer to the mic
+      </button>
+      <button id="btn2" class="btn-msg" onclick="sendMsg('Please speak slower')" disabled>
+        Please speak slower
+      </button>
+      <button id="btn3" class="btn-msg" onclick="sendMsg('Audio is unclear')" disabled>
+        Audio is unclear
+      </button>
+    </div>
+
+    <div id="notice" class="notice"></div>
+  </div>
+
+  <script src="https://appssdk.zoom.us/sdk.min.js"></script>
+  <script>
+    let sdkReady = false;
+    let alertTimeout = null;
+
+    function setStatus(msg) {
+      document.getElementById('status').textContent = msg;
+    }
+
+    function setNotice(msg, isError = false) {
+      const el = document.getElementById('notice');
+      el.textContent = msg;
+      el.className = isError ? 'notice error' : 'notice';
+    }
+
+    function enableButtons() {
+      ['btnInvite','btn1','btn2','btn3'].forEach(id => {
+        document.getElementById(id).disabled = false;
+      });
+    }
+
+    function showAlert(message) {
+      const overlay = document.getElementById('alertOverlay');
+      document.getElementById('alertText').textContent = message;
+      overlay.classList.add('show');
+      let remaining = 5;
+      document.getElementById('alertTimer').textContent = remaining + '초 후 사라집니다';
+      if (alertTimeout) clearInterval(alertTimeout);
+      alertTimeout = setInterval(() => {
+        remaining--;
+        if (remaining <= 0) {
+          clearInterval(alertTimeout);
+          overlay.classList.remove('show');
+        } else {
+          document.getElementById('alertTimer').textContent = remaining + '초 후 사라집니다';
+        }
+      }, 1000);
+    }
+
+    async function initZoom() {
+      try {
+        await zoomSdk.config({
+          version: '0.16',
+          popoutSize: { width: 240, height: 320 },
+          capabilities: [
+            'sendMessage', 'onMessage', 'getMeetingContext',
+            'getUserContext', 'getRunningContext',
+            'sendAppInvitation', 'getMeetingParticipants'
+          ]
+        });
+        sdkReady = true;
+        setStatus('✅ Ready');
+        enableButtons();
+
+        // 앱 시작 시 최소 크기로 collapse
+        zoomSdk.expandApp({ action: 'collapse' }).catch(() => {});
+
+        zoomSdk.onMessage((data) => {
+          try {
+            const msg = data.payload.message;
+            showAlert(msg);
+          } catch(e) {
+            console.error('onMessage error:', e);
+          }
+        });
+
+      } catch (e) {
+        setStatus('⚠️ SDK init failed: ' + e.message);
+        enableButtons();
+      }
+    }
+
+    async function inviteAll() {
+      if (!sdkReady) { setNotice('SDK not ready', true); return; }
+      try {
+        const participants = await zoomSdk.getMeetingParticipants();
+        const uuids = participants.participants.map(p => p.participantUUID);
+        await zoomSdk.sendAppInvitation({ participantUUIDs: uuids });
+        setNotice('✔️ 초대를 모든 참석자에게 보냈어요!');
+        setTimeout(() => setNotice(''), 3000);
+      } catch (err) {
+        setNotice('Failed: ' + err.message, true);
+      }
+    }
+
+    async function sendMsg(message) {
+      if (!sdkReady) { setNotice('SDK not ready', true); return; }
+      showAlert(message);
+      try {
+        await zoomSdk.sendMessage({ payload: { message } });
+      } catch (err) {
+        console.error('sendMessage error:', err);
+      }
+    }
+
+    initZoom();
+  </script>
+</body>
+</html>
