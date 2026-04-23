@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Zoom Interpreter Panel</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: Arial, sans-serif;
+      background: transparent;
+      display: flex;
+      justify-content: center;
+      align-items: flex-start;
+      padding: 4px;
+    }
+
+    #interpreterPanel {
+      background: #fff;
+      border-radius: 8px;
+      width: 100%;
+      display: none;
+    }
+
+    .btn-group { display: flex; flex-direction: column; gap: 5px; padding: 6px; }
+    button {
+      padding: 8px;
+      border: none;
+      border-radius: 6px;
+      color: #fff;
+      font-size: 0.78rem;
+      cursor: pointer;
+      font-weight: 600;
+      transition: background 0.2s;
+      width: 100%;
+    }
+    button:disabled { background: #aaa; cursor: not-allowed; }
+    .btn-invite { background: #e67e22; }
+    .btn-invite:hover:not(:disabled) { background: #ca6f1e; }
+    .btn-msg { background: #0e71eb; }
+    .btn-msg:hover:not(:disabled) { background: #085bb5; }
+    .divider { border: none; border-top: 1px solid #eee; margin: 2px 0; }
+    .status { padding: 3px 6px; font-size: 0.62rem; color: #888; }
+    .notice { padding: 0 6px 3px; color: #218838; font-weight: 500; min-height: 14px; font-size: 0.62rem; }
+    .error { color: #b72c2c; }
+
+    /* 통역사용 알림 배너 — 앱 전체 차지 */
+    #alertOverlay {
+      display: none;
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: #f1c40f;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      text-align: center;
+      padding: 12px;
+      z-index: 999;
+    }
+    #alertOverlay.show { display: flex; }
+    #alertText { font-size: 1.1rem; font-weight: 700; color: #333; line-height: 1.3; }
+    #alertTimer { font-size: 0.7rem; color: #555; }
+
+    /* 참가자용 전체화면 배너 */
+    #attendeeAlert {
+      display: none;
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: #f1c40f;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      text-align: center;
+      padding: 20px;
+      z-index: 999;
+    }
+    #attendeeAlert.show { display: flex; }
+    #attendeeAlertIcon { font-size: 2.5rem; }
+    #attendeeAlertText {
+      font-size: 2rem;
+      font-weight: 700;
+      color: #333;
+      line-height: 1.3;
+      word-break: break-word;
+    }
+    #attendeeAlertTimer { font-size: 1rem; color: #555; }
+  </style>
+</head>
+<body>
+
+  <div id="interpreterPanel">
+    <div id="status" class="status">Initializing...</div>
+
+    <div id="alertOverlay">
+      <div id="alertText"></div>
+      <div id="alertTimer"></div>
+    </div>
+
+    <div class="btn-group">
+      <button id="btnInvite" class="btn-invite" onclick="inviteAll()" disabled>
+        📨 초대 보내기
+      </button>
+      <hr class="divider">
+      <button id="btn1" class="btn-msg" onclick="sendMsg('Please speak closer to the mic')" disabled>
+        Speak closer to mic
+      </button>
+      <button id="btn2" class="btn-msg" onclick="sendMsg('Please speak slower')" disabled>
+        Speak slower
+      </button>
+      <button id="btn3" class="btn-msg" onclick="sendMsg('Audio is unclear')" disabled>
+        Audio is unclear
+      </button>
+    </div>
+
+    <div id="notice" class="notice"></div>
+  </div>
+
+  <div id="attendeeAlert">
+    <div id="attendeeAlertIcon">⚠️</div>
+    <div id="attendeeAlertText"></div>
+    <div id="attendeeAlertTimer"></div>
+  </div>
+
+  <script src="https://appssdk.zoom.us/sdk.min.js"></script>
+  <script>
+    // OAuth 콜백 또는 브라우저 직접 접속 처리
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('code')) {
+      document.body.innerHTML = '<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;font-family:Arial;text-align:center;padding:20px;"><img src="https://st1.zoom.us/zoom.ico" width="48" style="margin-bottom:16px;"><h2 style="color:#0e71eb;margin-bottom:8px;">Authorization Successful</h2><p style="color:#555;font-size:14px;">You have successfully authorized Interpreter Notification.<br>Please open this app inside a Zoom meeting to use it.</p></div>';
+    } else {
+      window.__notInZoom = true;
+    }
+  </script>
+  <script>
+    const INTERPRETER_EMAILS = [
+      'sh.jang@krafton.com',
+      'jangseonghun60@gmail.com',
+    ];
+
+    let sdkReady = false;
+    let alertTimeout = null;
+    let currentRole = null;
+
+    function setStatus(msg) {
+      document.getElementById('status').textContent = msg;
+    }
+
+    function setNotice(msg, isError = false) {
+      const el = document.getElementById('notice');
+      el.textContent = msg;
+      el.className = isError ? 'notice error' : 'notice';
+    }
+
+    function enableButtons() {
+      ['btnInvite','btn1','btn2','btn3'].forEach(id => {
+        document.getElementById(id).disabled = false;
+      });
+    }
+
+    function startCountdown(timerId, onEnd) {
+      if (alertTimeout) clearInterval(alertTimeout);
+      let remaining = 5;
+      document.getElementById(timerId).textContent = remaining + '초 후 사라집니다';
+      alertTimeout = setInterval(() => {
+        remaining--;
+        if (remaining <= 0) {
+          clearInterval(alertTimeout);
+          onEnd();
+        } else {
+          document.getElementById(timerId).textContent = remaining + '초 후 사라집니다';
+        }
+      }, 1000);
+    }
+
+    function showInterpreterAlert(msg) {
+      const overlay = document.getElementById('alertOverlay');
+      document.getElementById('alertText').textContent = msg;
+      overlay.classList.add('show');
+      startCountdown('alertTimer', () => overlay.classList.remove('show'));
+    }
+
+    function showAttendeeAlert(msg) {
+      const banner = document.getElementById('attendeeAlert');
+      document.getElementById('attendeeAlertText').textContent = msg;
+      banner.classList.add('show');
+      startCountdown('attendeeAlertTimer', () => banner.classList.remove('show'));
+    }
+
+    async function initZoom() {
+      try {
+        await zoomSdk.config({
+          version: '0.16',
+          popoutSize: { width: 160, height: 180 },
+          capabilities: [
+            'sendMessage', 'onMessage', 'getMeetingContext',
+            'getUserContext', 'getRunningContext',
+            'sendAppInvitation', 'getMeetingParticipants',
+            'appPopout', 'onAppPopout'
+          ]
+        });
+
+        currentRole = 'interpreter';
+        sdkReady = true;
+        document.getElementById('interpreterPanel').style.display = 'block';
+        setStatus('✅ Ready');
+        enableButtons();
+
+        // 팝아웃 모드로 자동 전환
+        try {
+          await zoomSdk.appPopout();
+        } catch(e) {
+          console.warn('appPopout failed:', e.message);
+        }
+
+        zoomSdk.onMessage((data) => {
+          try {
+            const msg = data.payload.message;
+            if (currentRole === 'interpreter') {
+              showInterpreterAlert(msg);
+            } else {
+              showAttendeeAlert(msg);
+            }
+          } catch(e) {
+            console.error('onMessage error:', e);
+          }
+        });
+
+      } catch(e) {
+        currentRole = 'attendee';
+        console.error('SDK init failed:', e.message);
+        if (window.__notInZoom || e.message.includes('not supported by this browser')) {
+          document.body.innerHTML = '<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;font-family:Arial;text-align:center;padding:20px;"><h2 style="color:#0e71eb;margin-bottom:8px;">Interpreter Notification</h2><p style="color:#555;font-size:14px;">This app runs inside the Zoom Meeting Client.<br>Please open it from the Apps panel during a Zoom meeting.</p><p style="color:#999;font-size:12px;margin-top:16px;">Developed by Krafton</p></div>';
+        }
+      }
+    }
+
+    async function inviteAll() {
+      if (!sdkReady) { setNotice('SDK not ready', true); return; }
+      try {
+        const participants = await zoomSdk.getMeetingParticipants();
+        const uuids = participants.participants.map(p => p.participantUUID);
+        await zoomSdk.sendAppInvitation({ participantUUIDs: uuids });
+        setNotice('✔️ 초대 완료!');
+        setTimeout(() => setNotice(''), 3000);
+      } catch(err) {
+        setNotice('Failed: ' + err.message, true);
+      }
+    }
+
+    async function sendMsg(message) {
+      if (!sdkReady) { setNotice('SDK not ready', true); return; }
+      showInterpreterAlert(message);
+      try {
+        await zoomSdk.sendMessage({ payload: { message } });
+      } catch(err) {
+        console.error('sendMessage error:', err);
+      }
+    }
+
+    initZoom();
+  </script>
+</body>
+</html>
