@@ -125,6 +125,13 @@
 
   <script src="https://appssdk.zoom.us/sdk.min.js"></script>
   <script>
+    // OAuth 콜백 처리
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('code')) {
+      document.body.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100vh;font-family:Arial;font-size:14px;color:#333;">Authorization successful. You can now open this app inside a Zoom meeting.</div>';
+    }
+  </script>
+  <script>
     const INTERPRETER_EMAILS = [
       'sh.jang@krafton.com',
       'jangseonghun60@gmail.com',
